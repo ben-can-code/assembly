@@ -1,418 +1,206 @@
-; =============================================================================
-; alu.asm - Task 3: Mini ALU Simulator for Embedded Billing Device
-; BIT 4220: Assembly Programming - Group Work
-;
-; Purpose: Menu-driven ALU simulator modelling the computation module of a
-;          prepaid utility meter. Reads two numbers from stdin via Linux
-;          system calls. Implements add, subtract, multiply, divide, AND, OR,
-;          XOR, NOT, shift-left, shift-right. Detects overflow and divide-by-zero.
-;
-; Build:
-;   nasm -f elf64 alu.asm -o alu.o
-;   ld alu.o -o alu
-;
-; Run:
-;   ./alu
-; =============================================================================
+; ============================================================
+; alu.asm  –  Task 3: Mini ALU Simulator
+; BIT 4220: Assembly Programming
+; Models the computation module of a prepaid billing device.
+; Reads two single-digit numbers from keyboard input.
+; Presents a menu of arithmetic and bitwise operations.
+; Displays the result after each operation.
+; Validates input and handles divide-by-zero.
+; ============================================================
 
-section .data
+section .data                           ; .data section – all initialised strings and constants
 
-    ; ---- UI Strings ----
-    banner      db  "============================================", 10
-                db  "  BIT 4220 - Mini ALU Simulator", 10
-                db  "  Embedded Billing Device Demo", 10
-                db  "============================================", 10
-    bannerlen   equ $ - banner
+    ; ---- menu string ----
+    menu db 10,"1. Add",10              ; menu option 1: addition. Leading 10 = blank line before menu
+         db "2. Subtract",10            ; menu option 2: subtraction
+         db "3. Multiply",10            ; menu option 3: multiplication
+         db "4. Divide",10              ; menu option 4: integer division
+         db "5. AND",10                 ; menu option 5: bitwise AND
+         db "6. OR",10                  ; menu option 6: bitwise OR
+         db "7. XOR",10                 ; menu option 7: bitwise XOR
+         db "8. Exit",10                ; menu option 8: exit the program
+         db "Choice: "                  ; prompt asking the user to type their choice
+    menulen equ $ - menu                ; total byte length of the entire menu string
 
-    prompt1     db  10, "Enter first number  A (0-99): "
-    p1len       equ $ - prompt1
+    msg1 db "Enter first digit: "       ; prompt for first number input
+    len1 equ $ - msg1                   ; length of msg1
 
-    prompt2     db  "Enter second number B (0-99): "
-    p2len       equ $ - prompt2
+    msg2 db "Enter second digit: "      ; prompt for second number input
+    len2 equ $ - msg2                   ; length of msg2
 
-    menu        db  10, "--- Select Operation ---", 10
-                db  "  1.  Add          (A + B)", 10
-                db  "  2.  Subtract     (A - B)", 10
-                db  "  3.  Multiply     (A * B)", 10
-                db  "  4.  Divide       (A / B)", 10
-                db  "  5.  Bitwise AND  (A & B)", 10
-                db  "  6.  Bitwise OR   (A | B)", 10
-                db  "  7.  Bitwise XOR  (A ^ B)", 10
-                db  "  8.  Bitwise NOT  (~A)", 10
-                db  "  9.  Shift Left   (A << 1)", 10
-                db  " 10.  Shift Right  (A >> 1)", 10
-                db  "  0.  Exit", 10
-                db  "Choice: "
-    menulen     equ $ - menu
+    resultMsg db "Result: "             ; label printed before displaying the answer
+    resultLen equ $ - resultMsg         ; length of resultMsg
 
-    ; ---- Result labels ----
-    resAdd      db  "Result (Add)       : "
-    rAddlen     equ $ - resAdd
-    resSub      db  "Result (Subtract)  : "
-    rSublen     equ $ - resSub
-    resMul      db  "Result (Multiply)  : "
-    rMullen     equ $ - resMul
-    resDiv      db  "Result (Divide)    : "
-    rDivlen     equ $ - resDiv
-    resAnd      db  "Result (AND)       : "
-    rAndlen     equ $ - resAnd
-    resOr       db  "Result (OR)        : "
-    rOrlen      equ $ - resOr
-    resXor      db  "Result (XOR)       : "
-    rXorlen     equ $ - resXor
-    resNot      db  "Result (NOT A)     : "
-    rNotlen     equ $ - resNot
-    resShl      db  "Result (SHL A<<1)  : "
-    rShll       equ $ - resShl
-    resShr      db  "Result (SHR A>>1)  : "
-    rShrl       equ $ - resShr
+    invalid db "Invalid choice!",10     ; error message for unrecognised menu input; 10 = newline
+    invalidLen equ $ - invalid          ; length of invalid message
 
-    nl          db  10
-    nllen       equ 1
+section .bss                            ; .bss section – uninitialised buffers (reserved at runtime, zero-filled)
 
-    errInvalid  db  "[!] Invalid choice. Please enter 0-10.", 10
-    errIlen     equ $ - errInvalid
+    choice resb 2                       ; reserve 2 bytes for the menu choice character + newline from keyboard
+    num1   resb 2                       ; reserve 2 bytes for the first number character + newline
+    num2   resb 2                       ; reserve 2 bytes for the second number character + newline
+    result resb 2                       ; reserve 2 bytes to hold the result character for printing
 
-    errDivZero  db  "[!] Division by zero is undefined!", 10
-    errDlen     equ $ - errDivZero
+section .text                           ; .text section – all executable instructions
 
-    errOverflow db  "[!] Overflow warning: result exceeds 8-bit range (>255)!", 10
-    errOlen     equ $ - errOverflow
+    global _start                       ; expose _start to the linker as the program entry point
 
-    byeMsg      db  10, "Exiting ALU Simulator. Goodbye!", 10
-    byelen      equ $ - byeMsg
+_start:                                 ; execution begins here
 
-section .bss
-    inbuf1      resb 8      ; input buffer for number A
-    inbuf2      resb 8      ; input buffer for number B
-    choicebuf   resb 4      ; input buffer for menu choice
-    outbuf      resb 20     ; output buffer for number-to-string conversion
+menu_loop:                              ; loop label – we jump back here after each operation to show the menu again
 
-section .text
-    global _start
+    ; ---- display the menu ----
+    mov eax, 4                          ; syscall 4 = sys_write
+    mov ebx, 1                          ; file descriptor 1 = stdout
+    mov ecx, menu                       ; pointer to the menu string
+    mov edx, menulen                    ; number of bytes to write
+    int 0x80                            ; kernel call – prints the menu
 
-; =============================================================================
-; print: sys_write wrapper
-;   in:  rsi = buffer address
-;        rdx = byte count
-; =============================================================================
-print:
-    mov rax, 1
-    mov rdi, 1
-    syscall
-    ret
+    ; ---- read the user's menu choice ----
+    mov eax, 3                          ; syscall 3 = sys_read (read bytes from a file descriptor)
+    mov ebx, 0                          ; file descriptor 0 = stdin (keyboard)
+    mov ecx, choice                     ; pointer to the buffer where input will be stored
+    mov edx, 2                          ; read at most 2 bytes (1 digit + newline)
+    int 0x80                            ; kernel call – waits for user to press a key and Enter
 
-; =============================================================================
-; readline: sys_read wrapper
-;   in:  rsi = buffer address
-;        rdx = max bytes to read
-;   out: rax = bytes actually read
-; =============================================================================
-readline:
-    mov rax, 0
-    mov rdi, 0
-    syscall
-    ret
+    ; ---- check if user chose Exit (option 8) ----
+    cmp byte [choice], '8'              ; compare the first byte of choice buffer with ASCII '8' (0x38)
+    je exit                             ; if equal, jump to exit label and terminate
 
-; =============================================================================
-; atoi: ASCII decimal string -> integer
-;   in:  rsi = pointer to string (newline or null terminated)
-;   out: rax = integer value
-; =============================================================================
-atoi:
-    xor rax, rax
-    xor rcx, rcx
-.loop:
-    movzx rbx, byte [rsi + rcx]
-    cmp rbx, 10         ; newline?
-    je  .done
-    cmp rbx, 0
-    je  .done
-    cmp rbx, '0'
-    jl  .done
-    cmp rbx, '9'
-    jg  .done
-    sub rbx, '0'
-    imul rax, rax, 10
-    add rax, rbx
-    inc rcx
-    jmp .loop
-.done:
-    ret
+    ; ---- prompt for first number ----
+    mov eax, 4                          ; sys_write
+    mov ebx, 1                          ; stdout
+    mov ecx, msg1                       ; pointer to "Enter first digit: "
+    mov edx, len1                       ; length of prompt
+    int 0x80                            ; print the prompt
 
-; =============================================================================
-; itoa: integer -> ASCII decimal string in outbuf
-;   in:  rax = integer (non-negative)
-;   out: rsi = start of string in outbuf
-;        rdx = length including trailing newline
-; =============================================================================
-itoa:
-    lea rdi, [outbuf + 18]
-    mov byte [rdi], 10      ; newline
-    dec rdi
-    xor rcx, rcx
+    ; ---- read first number from keyboard ----
+    mov eax, 3                          ; sys_read
+    mov ebx, 0                          ; stdin
+    mov ecx, num1                       ; store input in num1 buffer
+    mov edx, 2                          ; read 2 bytes (digit + newline)
+    int 0x80                            ; kernel call – get the digit
 
-    cmp rax, 0
-    jne .convert
-    ; special case: zero
-    mov byte [rdi], '0'
-    dec rdi
-    inc rcx
-    jmp .done_itoa
+    ; ---- prompt for second number ----
+    mov eax, 4                          ; sys_write
+    mov ebx, 1                          ; stdout
+    mov ecx, msg2                       ; pointer to "Enter second digit: "
+    mov edx, len2                       ; length of prompt
+    int 0x80                            ; print the prompt
 
-.convert:
-    test rax, rax
-    jz  .done_itoa
-    xor rdx, rdx
-    mov rbx, 10
-    div rbx                 ; rax = quotient, rdx = remainder
-    add dl, '0'
-    mov [rdi], dl
-    dec rdi
-    inc rcx
-    jmp .convert
+    ; ---- read second number from keyboard ----
+    mov eax, 3                          ; sys_read
+    mov ebx, 0                          ; stdin
+    mov ecx, num2                       ; store input in num2 buffer
+    mov edx, 2                          ; read 2 bytes (digit + newline)
+    int 0x80                            ; kernel call – get the digit
 
-.done_itoa:
-    inc rdi
-    mov rsi, rdi
-    mov rdx, rcx
-    inc rdx                 ; include newline
-    ret
+    ; ---- convert ASCII digits to integers ----
+    mov al, [num1]                      ; load the first byte of num1 into al (8-bit low part of eax)
+                                        ; e.g. if user typed '5', al = 0x35 (ASCII for '5')
+    sub al, '0'                         ; subtract ASCII '0' (0x30) to get the numeric value: 0x35 - 0x30 = 5
 
-; =============================================================================
-; _start: program entry point
-; =============================================================================
-_start:
-    ; print banner
-    mov rsi, banner
-    mov rdx, bannerlen
-    call print
+    mov bl, [num2]                      ; load the first byte of num2 into bl (8-bit low part of ebx)
+    sub bl, '0'                         ; convert from ASCII digit to integer the same way
 
-.main_loop:
-    ; ---- read A ----
-    mov rsi, prompt1
-    mov rdx, p1len
-    call print
+    ; ---- dispatch to the correct operation ----
+    cmp byte [choice], '1'              ; is the choice '1' (Add)?
+    je addition                         ; yes – jump to addition
 
-    mov rsi, inbuf1
-    mov rdx, 7
-    call readline
+    cmp byte [choice], '2'              ; is the choice '2' (Subtract)?
+    je subtraction                      ; yes – jump to subtraction
 
-    mov rsi, inbuf1
-    call atoi
-    mov r12, rax            ; r12 = A
+    cmp byte [choice], '3'              ; is the choice '3' (Multiply)?
+    je multiplication                   ; yes – jump to multiplication
 
-    ; ---- read B ----
-    mov rsi, prompt2
-    mov rdx, p2len
-    call print
+    cmp byte [choice], '4'              ; is the choice '4' (Divide)?
+    je division                         ; yes – jump to division
 
-    mov rsi, inbuf2
-    mov rdx, 7
-    call readline
+    cmp byte [choice], '5'              ; is the choice '5' (AND)?
+    je and_op                           ; yes – jump to bitwise AND
 
-    mov rsi, inbuf2
-    call atoi
-    mov r13, rax            ; r13 = B
+    cmp byte [choice], '6'              ; is the choice '6' (OR)?
+    je or_op                            ; yes – jump to bitwise OR
 
-    ; ---- show menu ----
-    mov rsi, menu
-    mov rdx, menulen
-    call print
+    cmp byte [choice], '7'              ; is the choice '7' (XOR)?
+    je xor_op                           ; yes – jump to bitwise XOR
 
-    ; ---- read choice ----
-    mov rsi, choicebuf
-    mov rdx, 3
-    call readline
+    jmp invalid_choice                  ; none matched – jump to error handler
 
-    mov rsi, choicebuf
-    call atoi               ; rax = choice number
+; ---- ADDITION ----
+addition:
+    add al, bl                          ; al = al + bl  (adds both numbers; result stays in al)
+    jmp display                         ; jump to display section to print the result
 
-    ; ---- dispatch ----
-    cmp rax, 0
-    je  .exit_program
-    cmp rax, 1
-    je  .do_add
-    cmp rax, 2
-    je  .do_sub
-    cmp rax, 3
-    je  .do_mul
-    cmp rax, 4
-    je  .do_div
-    cmp rax, 5
-    je  .do_and
-    cmp rax, 6
-    je  .do_or
-    cmp rax, 7
-    je  .do_xor
-    cmp rax, 8
-    je  .do_not
-    cmp rax, 9
-    je  .do_shl
-    cmp rax, 10
-    je  .do_shr
+; ---- SUBTRACTION ----
+subtraction:
+    sub al, bl                          ; al = al - bl  (subtracts second number from first)
+    jmp display                         ; jump to display
 
-    ; invalid
-    mov rsi, errInvalid
-    mov rdx, errIlen
-    call print
-    jmp .main_loop
+; ---- MULTIPLICATION ----
+multiplication:
+    mul bl                              ; ax = al * bl  (unsigned multiply; result goes into ax)
+    jmp display                         ; jump to display
 
-; ---- ADD ----
-.do_add:
-    mov rax, r12
-    add rax, r13
-    cmp rax, 255
-    jg  .overflow_add
-    mov rsi, resAdd
-    mov rdx, rAddlen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+; ---- DIVISION ----
+division:
+    cmp bl, 0                           ; check if divisor (bl) is zero before dividing
+    je invalid_choice                   ; division by zero is undefined – show error instead
+    div bl                              ; al = ax / bl  (unsigned divide; quotient in al, remainder in ah)
+    jmp display                         ; jump to display
 
-.overflow_add:
-    mov rsi, errOverflow
-    mov rdx, errOlen
-    call print
-    mov rsi, resAdd
-    mov rdx, rAddlen
-    call print
-    mov rax, r12
-    add rax, r13
-    call itoa
-    call print
-    jmp .main_loop
+; ---- BITWISE AND ----
+and_op:
+    and al, bl                          ; al = al AND bl  (1 only where BOTH bits are 1)
+                                        ; use case: isolate specific bits, e.g. check device status flags
+    jmp display
 
-; ---- SUBTRACT ----
-.do_sub:
-    mov rax, r12
-    sub rax, r13
-    mov rsi, resSub
-    mov rdx, rSublen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+; ---- BITWISE OR ----
+or_op:
+    or al, bl                           ; al = al OR bl   (1 where EITHER bit is 1)
+                                        ; use case: set specific bits without changing others
+    jmp display
 
-; ---- MULTIPLY ----
-.do_mul:
-    mov rax, r12
-    imul rax, r13
-    cmp rax, 255
-    jg  .overflow_mul
-    mov rsi, resMul
-    mov rdx, rMullen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+; ---- BITWISE XOR ----
+xor_op:
+    xor al, bl                          ; al = al XOR bl  (1 only where bits DIFFER)
+                                        ; use case: toggle bits; XOR a value with itself always gives 0
+    jmp display
 
-.overflow_mul:
-    mov rsi, errOverflow
-    mov rdx, errOlen
-    call print
-    mov rsi, resMul
-    mov rdx, rMullen
-    call print
-    mov rax, r12
-    imul rax, r13
-    call itoa
-    call print
-    jmp .main_loop
+; ---- DISPLAY RESULT ----
+display:
+    add al, '0'                         ; convert integer result back to ASCII digit by adding '0' (0x30)
+                                        ; e.g. result 7 -> 7 + 0x30 = 0x37 = ASCII '7'
+    mov [result], al                    ; store the ASCII character into the result buffer
 
-; ---- DIVIDE ----
-.do_div:
-    cmp r13, 0
-    je  .div_zero
-    mov rax, r12
-    xor rdx, rdx
-    div r13
-    mov rsi, resDiv
-    mov rdx, rDivlen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+    ; print "Result: " label
+    mov eax, 4                          ; sys_write
+    mov ebx, 1                          ; stdout
+    mov ecx, resultMsg                  ; pointer to "Result: "
+    mov edx, resultLen                  ; length of label
+    int 0x80                            ; print the label
 
-.div_zero:
-    mov rsi, errDivZero
-    mov rdx, errDlen
-    call print
-    jmp .main_loop
+    ; print the actual result character
+    mov eax, 4                          ; sys_write
+    mov ebx, 1                          ; stdout
+    mov ecx, result                     ; pointer to result buffer (contains the ASCII digit)
+    mov edx, 1                          ; print exactly 1 byte (the digit)
+    int 0x80                            ; kernel call – prints the digit on screen
 
-; ---- AND ----
-.do_and:
-    mov rax, r12
-    and rax, r13
-    mov rsi, resAnd
-    mov rdx, rAndlen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+    jmp menu_loop                       ; go back to the top and show the menu again
 
-; ---- OR ----
-.do_or:
-    mov rax, r12
-    or  rax, r13
-    mov rsi, resOr
-    mov rdx, rOrlen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+; ---- INVALID CHOICE HANDLER ----
+invalid_choice:
+    mov eax, 4                          ; sys_write
+    mov ebx, 1                          ; stdout
+    mov ecx, invalid                    ; pointer to "Invalid choice!" message
+    mov edx, invalidLen                 ; length of error message
+    int 0x80                            ; print the error
 
-; ---- XOR ----
-.do_xor:
-    mov rax, r12
-    xor rax, r13
-    mov rsi, resXor
-    mov rdx, rXorlen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
-
-; ---- NOT (masked to 8-bit) ----
-.do_not:
-    mov rax, r12
-    not rax
-    and rax, 0xFF           ; mask to 8-bit for meaningful display
-    mov rsi, resNot
-    mov rdx, rNotlen
-    call print
-    call itoa
-    call print
-    jmp .main_loop
-
-; ---- SHIFT LEFT ----
-.do_shl:
-    mov rax, r12
-    shl rax, 1
-    mov rsi, resShl
-    mov rdx, rShll
-    call print
-    call itoa
-    call print
-    jmp .main_loop
-
-; ---- SHIFT RIGHT ----
-.do_shr:
-    mov rax, r12
-    shr rax, 1
-    mov rsi, resShr
-    mov rdx, rShrl
-    call print
-    call itoa
-    call print
-    jmp .main_loop
+    jmp menu_loop                       ; return to menu so user can try again
 
 ; ---- EXIT ----
-.exit_program:
-    mov rsi, byeMsg
-    mov rdx, byelen
-    call print
-    mov rax, 60
-    xor rdi, rdi
-    syscall
+exit:
+    mov eax, 1                          ; syscall 1 = sys_exit
+    xor ebx, ebx                        ; exit code 0 = success
+    int 0x80                            ; kernel call – terminates the program
